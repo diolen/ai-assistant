@@ -1,9 +1,13 @@
+import os
+import json
+
 from core.search import find_target
 from core.model import call_model
 from core.analyzer import find_field_flow, find_request_input
 from core.context import extract_field as fallback_field
 from core.global_search import search_field_in_project
-from core.interpreter import interpret
+
+from core.index_store import IndexStore
 
 from proof.tracer import build_proof
 from proof.global_tracer import build_global_report
@@ -11,7 +15,34 @@ from proof.global_tracer import build_global_report
 from utils import load_prompt, log_time
 from config import *
 
-import json
+
+# =========================
+# QUERY PARSER (FIXED V10.2 CORE)
+# =========================
+def parse_query(query):
+    tokens = query.split()
+
+    controller = None
+    action = None
+    field = None
+
+    for t in tokens:
+        if "Controller" in t:
+            controller = t
+        elif t.startswith("admin_"):
+            action = t
+        elif t in ["grand_total", "total"] or "_" in t:
+            field = t
+
+    return controller, action, field
+
+
+INTENTS = {
+    "search": ["где", "найди", "используется"],
+    "debug": ["почему", "ошибка", "баг", "не работает"],
+    "flow": ["как проходит", "поток"],
+    "refactor": ["исправь", "почини"]
+}
 
 PROMPT_MAP = {
     "search": "assistant/prompts/search.txt",
@@ -20,54 +51,67 @@ PROMPT_MAP = {
     "refactor": "assistant/prompts/refactor.txt"
 }
 
+
 def load_index():
-    with open(STRUCT_FILE) as f:
-        return json.load(f)
+    index_path = os.path.join("assistant/index", "index.json")
+    index_store = IndexStore(index_path)
+    index_store.load()
+    return index_store
+
 
 def run_engine(query, prompt_override=None):
 
     start = log_time("START")
 
-    index = load_index()
-    target = find_target(index, query)
+    # =========================
+    # LOAD INDEX
+    # =========================
+    index_store = load_index()
 
+    # =========================
+    # TARGET RESOLUTION
+    # =========================
+    target = find_target(index_store.raw(), query)
+
+    # =========================
+    # QUERY PARSING (FIXED)
+    # =========================
+    controller, action, field = parse_query(query)
+
+    if not field:
+        field = fallback_field(query)
+
+    print(f"[CONTROLLER] {controller}")
+    print(f"[ACTION] {action}")
+    print(f"[FIELD] {field}")
+
+    # =========================
+    # GLOBAL MODE
+    # =========================
     if not target:
         print("[MODE] global")
-
-        parsed = interpret(query)
-        field = parsed["field"]
-
-        if not field:
-            field = fallback_field(query)
 
         if not field:
             print("FIELD NOT FOUND")
             return
 
-        print(f"[FIELD] {field}")
+        results = index_store.find_field(field)
 
-        results = search_field_in_project(PROJECT_ROOT, field)
+        if not results:
+            print("[INDEX MISS] fallback to global search")
+            results = search_field_in_project(PROJECT_ROOT, field)
 
-        report = build_global_report(
-            results,
-            filter_type=parsed.get("filter_type"),
-            grep=parsed.get("grep"),
-            limit=parsed.get("limit")
-        )
+        report = build_global_report(results)
 
         print("\n--- GLOBAL SEARCH ---\n")
         print(report)
 
         return
 
+    # =========================
+    # LOCAL MODE
+    # =========================
     print(f"[FOUND] {target['class']}::{target['method']}")
-
-    parsed = interpret(query)
-    intents = parsed["intents"]
-    field = parsed["field"] or fallback_field(query) or "grand_total"
-
-    print(f"[INTENTS] {intents}")
-    print(f"[FIELD] {field}")
 
     with open(target["file"], "r", errors="ignore") as f:
         code = f.read()
@@ -79,7 +123,14 @@ def run_engine(query, prompt_override=None):
 
     print("\n--- PROOF ---\n", proof)
 
-    global_results = search_field_in_project(PROJECT_ROOT, field)
+    # =========================
+    # INDEX-FIRST GLOBAL VIEW
+    # =========================
+    global_results = index_store.find_field(field)
+
+    if not global_results:
+        global_results = search_field_in_project(PROJECT_ROOT, field)
+
     global_report = build_global_report(global_results)
 
     need_deep = not inputs or not flow["writes"]
@@ -89,14 +140,17 @@ def run_engine(query, prompt_override=None):
 
     final = []
 
-    for intent in intents:
+    # FIX: correct iteration
+    for intent in INTENTS.keys():
 
-        prompt_file = prompt_override or PROMPT_MAP.get(intent, DEFAULT_PROMPT)
+        prompt_file = prompt_override or PROMPT_MAP.get(intent)
 
         print(f"[STEP] {intent} → {prompt_file}")
 
         context = proof if mode == "fast" else (
-            proof + "\n\n--- GLOBAL ---\n" + global_report + "\n\n--- CODE ---\n" + code[:2000]
+            proof + "\n\n--- GLOBAL ---\n" +
+            global_report + "\n\n--- CODE ---\n" +
+            code[:2000]
         )
 
         prompt = load_prompt(prompt_file).format(

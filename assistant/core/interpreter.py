@@ -1,13 +1,22 @@
 import re
 
+# -------------------------
+# INTENT RULES (deterministic)
+# -------------------------
+
 INTENTS = {
-    "search": ["где", "найди", "используется"],
-    "debug": ["почему", "ошибка", "баг", "не работает"],
-    "flow": ["как проходит", "поток"],
-    "refactor": ["исправь", "почини"]
+    "search": ["где", "найди", "используется", "использование"],
+    "debug": ["почему", "ошибка", "баг", "не работает", "сломалось"],
+    "flow": ["как проходит", "поток", "цепочка", "откуда берётся"],
+    "refactor": ["исправь", "почини", "улучши", "перепиши"]
 }
 
 PRIORITY = ["refactor", "debug", "flow", "search"]
+
+
+# -------------------------
+# FIELD EXTRACTION
+# -------------------------
 
 FIELD_ALIASES = {
     "сумма": "grand_total",
@@ -15,8 +24,10 @@ FIELD_ALIASES = {
     "total": "grand_total"
 }
 
-def detect_intents(query):
+
+def detect_intents(query: str):
     q = query.lower()
+
     scores = {k: 0 for k in INTENTS}
 
     for intent, words in INTENTS.items():
@@ -24,33 +35,43 @@ def detect_intents(query):
             if w in q:
                 scores[intent] += 1
 
-    found = [k for k,v in scores.items() if v > 0]
+    found = [k for k, v in scores.items() if v > 0]
 
+    # если ничего не найдено → безопасный fallback (но НЕ debug по умолчанию)
     if not found:
-        return ["debug"]
+        return ["search"]
 
     found.sort(key=lambda x: PRIORITY.index(x))
     return found
 
-def extract_field(query):
+
+def extract_field(query: str):
+    """
+    Детерминированное извлечение поля без fallback-магии.
+    """
+
     q = query.lower()
 
+    # 1. явные алиасы
     for k, v in FIELD_ALIASES.items():
         if k in q:
             return v
 
-    words = re.findall(r"[a-zA-Z_]+", q)
+    # 2. прямое совпадение snake_case
+    candidates = re.findall(r"[a-zA-Z_]+", q)
 
-    for w in words:
-        if w.startswith("admin_"):
-            continue
+    for c in candidates:
+        if "_" in c:
+            # исключаем controller/method слова
+            if c.startswith("admin_"):
+                continue
+            return c
 
-        if "_" in w:
-            return w
-
+    # 3. ничего не найдено → None (ВАЖНО)
     return None
 
-def extract_filters(query):
+
+def extract_filters(query: str):
     q = query.lower()
 
     filter_type = None
@@ -64,28 +85,38 @@ def extract_filters(query):
     elif "условия" in q or "if" in q:
         filter_type = "CONDITION"
 
-    # grep по слову
-    import re
+    # grep: grep:word
     m = re.search(r"grep:(\w+)", q)
     if m:
         grep = m.group(1)
 
-    # limit
+    # limit: limit:10
     m = re.search(r"limit:(\d+)", q)
     if m:
         limit = int(m.group(1))
 
-    return filter_type, grep, limit    
+    return filter_type, grep, limit
 
-def interpret(query):
+
+# -------------------------
+# MAIN INTERPRETER
+# -------------------------
+
+def interpret(query: str):
+    """
+    V10:
+    - без fallback поля
+    - без hardcoded grand_total
+    - полностью детерминированный output
+    """
+
+    intents = detect_intents(query)
+    field = extract_field(query)
     filter_type, grep, limit = extract_filters(query)
 
-    field = extract_field(query)
-    intents = detect_intents(query)
-
     return {
-        "field": field,
         "intents": intents,
+        "field": field,
         "filter_type": filter_type,
         "grep": grep,
         "limit": limit

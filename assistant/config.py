@@ -1,4 +1,4 @@
-STRUCT_FILE = "assistant.json"
+STRUCT_FILE = "index/index.json"
 PROJECT_ROOT = "./app"
 
 FAST_MODEL = "phi3:mini"
