@@ -4,7 +4,7 @@ import re
 from core.search import find_target
 from core.model import call_model
 from core.analyzer import find_field_flow, find_request_input
-from core.context import extract_field as fallback_field
+from core.context import extract_field as fallback_field, extract_nested_fields
 from core.global_search import search_field_in_project
 
 from core.index_store import IndexStore
@@ -45,63 +45,6 @@ def parse_query(query):
 
 
 # =========================
-# AUTO FIELD DETECTOR 🔥
-# =========================
-def extract_fields_from_code(code):
-    """
-    V11.1 SMART FIELD DETECTOR
-
-    приоритет:
-    1. request->data
-    2. переменные ($total)
-    3. массивы ['total']
-    """
-
-    import re
-
-    if not code:
-        return []
-
-    # =========================
-    # 1. REQUEST (TOP PRIORITY)
-    # =========================
-    request_fields = re.findall(
-        r"request->data\[['\"]([a-zA-Z0-9_]+)['\"]\]",
-        code,
-        re.IGNORECASE
-    )
-
-    if request_fields:
-        return request_fields[:3]
-
-    # =========================
-    # 2. VARIABLES ($total)
-    # =========================
-    vars_found = re.findall(r"\$([a-zA-Z_][a-zA-Z0-9_]*)", code)
-
-    priority_vars = [
-        v for v in vars_found
-        if v not in ["this", "data", "rs", "item"]
-        and len(v) > 3
-    ]
-
-    if priority_vars:
-        return priority_vars[:3]
-
-    # =========================
-    # 3. ARRAY KEYS
-    # =========================
-    keys_found = re.findall(r"\[['\"]([a-zA-Z0-9_]+)['\"]\]", code)
-
-    priority_keys = [
-        k for k in keys_found
-        if len(k) > 4
-        and k not in ["id", "name", "type"]
-    ]
-
-    return priority_keys[:3]
-
-# =========================
 # INDEX LOADER
 # =========================
 def load_index():
@@ -112,7 +55,7 @@ def load_index():
 
 
 # =========================
-# ENGINE (V11 AUTO FIELD)
+# ENGINE V11.3 STABLE
 # =========================
 def run_engine(query, prompt_override=None):
 
@@ -123,12 +66,12 @@ def run_engine(query, prompt_override=None):
     controller, action, field = parse_query(query)
 
     # =========================
-    # FIELD RESOLUTION
+    # FIELD RESOLUTION (FIXED PRIORITY)
     # =========================
     if not field:
         field = fallback_field(query)
 
-    # ❗ если поле совпадает с методом — сбрасываем
+    # ❌ never allow action = field
     if field == action:
         field = None
 
@@ -141,13 +84,10 @@ def run_engine(query, prompt_override=None):
     # =========================
     clean_index = []
     for x in index_store.data:
-        if not isinstance(x, dict):
-            continue
-
-        x["reads"] = x.get("reads") or []
-        x["writes"] = x.get("writes") or []
-
-        clean_index.append(x)
+        if isinstance(x, dict):
+            x["reads"] = x.get("reads") or []
+            x["writes"] = x.get("writes") or []
+            clean_index.append(x)
 
     target = find_target(
         clean_index,
@@ -156,7 +96,7 @@ def run_engine(query, prompt_override=None):
     )
 
     # =========================
-    # GLOBAL MODE
+    # GLOBAL MODE (SAFE GATE)
     # =========================
     if not target:
 
@@ -186,19 +126,35 @@ def run_engine(query, prompt_override=None):
         code = f.read()
 
     # =========================
-    # 🔥 AUTO FIELD DETECT
+    # 🔥 AUTO FIELD (ONLY IF STILL EMPTY)
     # =========================
     if not field:
-        detected_fields = extract_fields_from_code(code)
 
-        if detected_fields:
-            field = detected_fields[0]
-            print(f"[AUTO FIELD] {field}")
+        # 1. nested structured fields FIRST (IMPORTANT FIX)
+        nested = extract_nested_fields(code)
+
+        if nested:
+            field = nested[0]
+            print(f"[AUTO FIELD:NESTED] {field}")
+
         else:
-            field = "unknown_field"
+            # 2. fallback heuristic
+            detected = re.findall(r"\$([a-zA-Z_][a-zA-Z0-9_]*)", code)
+
+            filtered = [
+                v for v in detected
+                if v not in {"this", "data", "rs", "item"}
+                and len(v) > 3
+            ]
+
+            if filtered:
+                field = filtered[0]
+                print(f"[AUTO FIELD:VAR] {field}")
+            else:
+                field = "unknown_field"
 
     # =========================
-    # FLOW
+    # FLOW ANALYSIS
     # =========================
     flow = find_field_flow(code, field)
 
@@ -228,9 +184,9 @@ def run_engine(query, prompt_override=None):
     global_report = build_global_report(global_results, limit=40)
 
     # =========================
-    # MODE
+    # MODE DECISION
     # =========================
-    write_count = len(flow.get("writes", []) or [])
+    write_count = len(flow.get("writes", []))
     input_missing = not inputs
 
     need_deep = input_missing or (write_count == 0)
@@ -239,13 +195,14 @@ def run_engine(query, prompt_override=None):
     print(f"[MODE] {mode}")
 
     # =========================
-    # PROMPT
+    # PROMPT BUILD
     # =========================
     prompt_file = prompt_override or "assistant/prompts/flow.txt"
 
     context = proof
 
     if mode == "deep":
+
         if global_report:
             context += "\n\n--- GLOBAL ---\n" + global_report
 
@@ -258,6 +215,9 @@ def run_engine(query, prompt_override=None):
         var=field
     )
 
+    # =========================
+    # LLM CALL
+    # =========================
     t = log_time("LLM")
 
     result = call_model(

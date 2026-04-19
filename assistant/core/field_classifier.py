@@ -1,5 +1,7 @@
 # core/field_classifier.py
 
+import re
+
 
 def _normalize(code):
     if not isinstance(code, str):
@@ -7,14 +9,16 @@ def _normalize(code):
     return code.lower()
 
 
+# =========================
+# STRICT FIELD MATCH (FIXED)
+# =========================
 def _has_field(code, field):
     code_l = _normalize(code)
     field_l = field.lower()
 
-    # защита от подстрок (id vs order_id)
-    return (
-        f"{field_l}" in code_l
-    )
+    # word boundary protection (FIX)
+    pattern = rf"\b{re.escape(field_l)}\b"
+    return re.search(pattern, code_l) is not None
 
 
 # =========================
@@ -26,7 +30,7 @@ def is_transform(code, field):
     if not _has_field(code_l, field):
         return False
 
-    return any(x in code_l for x in [
+    return any(op in code_l for op in [
         "+=",
         "-=",
         "*=",
@@ -43,7 +47,7 @@ def is_transform(code, field):
 
 
 # =========================
-# RENDER (VIEW OUTPUT)
+# RENDER
 # =========================
 def is_render(code, field):
     code_l = _normalize(code)
@@ -55,15 +59,14 @@ def is_render(code, field):
         "echo",
         "print",
         "number_format",
-        "set(",            # CakePHP view set
-        "setcompact",
+        "set(",
         "render",
         "view"
     ])
 
 
 # =========================
-# EXPORT (FILE/API OUTPUT)
+# EXPORT
 # =========================
 def is_export(code, field):
     code_l = _normalize(code)
@@ -83,7 +86,7 @@ def is_export(code, field):
 
 
 # =========================
-# WRITE (DATA PERSIST)
+# WRITE (PRIORITY FIX)
 # =========================
 def is_write(code, field):
     code_l = _normalize(code)
@@ -102,7 +105,7 @@ def is_write(code, field):
 
 
 # =========================
-# READ (SAFE)
+# READ (FIXED LOGIC)
 # =========================
 def is_read(code, field):
     code_l = _normalize(code)
@@ -110,8 +113,8 @@ def is_read(code, field):
     if not _has_field(code_l, field):
         return False
 
-    # READ = упоминание без записи
-    if "=" in code_l:
+    # ❗ write has priority over read
+    if is_write(code_l, field):
         return False
 
     return True

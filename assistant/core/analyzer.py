@@ -1,12 +1,15 @@
+import re
+
+
 def find_field_flow(code, field):
     """
-    V10.7 CLEAN ANALYZER
+    V11.3 CLEAN DATAFLOW ENGINE (STABLE)
 
     FIXES:
-    - точные WRITE
-    - строгие CONDITIONS
-    - CALLS только с участием field
-    - правильный приоритет операторов
+    - case-safe detection
+    - no condition pollution in READ
+    - strict WRITE matching
+    - CALLS only when field is argument or property access
     """
 
     if not code or not field:
@@ -23,68 +26,68 @@ def find_field_flow(code, field):
 
     field_l = field.lower()
 
+    # =========================
+    # SAFE WRITE PATTERNS (case-safe)
+    # =========================
+    write_patterns = [
+        rf"\$\w*{re.escape(field)}\s*=",        # $var = field
+        rf"['\"]{re.escape(field)}['\"]\s*=>",  # 'field' =>
+        rf"\[{re.escape(field)}\]\s*=",         # [field] =
+        r"->set\("
+    ]
+
     for i, line in enumerate(lines, 1):
 
         lower = line.lower()
-
-        if field_l not in lower:
-            continue  # ускорение
-
         clean = line.strip()
 
-        # =========================
-        # SAVE (выше WRITE)
-        # =========================
-        if "->save(" in lower or "save(" in lower:
-            saves.append({
-                "line": i,
-                "code": clean
-            })
+        if field_l not in lower:
             continue
 
         # =========================
-        # WRITE (FIX PRIORITY)
+        # SAVE
         # =========================
-        if (
-            f"{field_l} =" in lower
-            or f"'{field_l}' =>" in lower
-            or f'"{field_l}" =>' in lower
-            or (f"[{field_l}]" in lower and "=" in lower)
-            or ("->set(" in lower and field_l in lower)
-        ):
-            writes.append({
-                "line": i,
-                "code": clean
-            })
+        if "->save(" in lower:
+            saves.append({"line": i, "code": clean})
             continue
 
         # =========================
-        # CONDITIONS (STRICT)
+        # WRITE (STRICT)
+        # =========================
+        if any(re.search(p, line) for p in write_patterns):
+            writes.append({"line": i, "code": clean})
+            continue
+
+        # =========================
+        # CONDITIONS (FIXED SEPARATION)
         # =========================
         if lower.strip().startswith("if"):
-            conditions.append({
-                "line": i,
-                "code": clean
-            })
+            conditions.append({"line": i, "code": clean})
             continue
 
         # =========================
-        # CALLS (только если поле участвует)
+        # CALLS (STRICT FIELD RELATION ONLY)
         # =========================
-        if "->" in lower and "(" in lower and field_l in lower:
-            calls.append({
-                "line": i,
-                "code": clean
-            })
-            continue
+        if "->" in lower and "(" in lower:
+            if (
+                f"{field_l}" in lower or
+                f"${field_l}" in lower or
+                f"['{field_l}']" in lower or
+                f'["{field_l}"]' in lower
+            ):
+                calls.append({"line": i, "code": clean})
+                continue
 
         # =========================
-        # READ (DEFAULT)
+        # READ (SAFE VALUE CONTEXT ONLY)
         # =========================
-        reads.append({
-            "line": i,
-            "code": clean
-        })
+        if (
+            field_l in lower
+            and "=" not in lower
+            and not lower.strip().startswith("if")
+            and "return" not in lower
+        ):
+            reads.append({"line": i, "code": clean})
 
     return {
         "reads": reads,
@@ -98,12 +101,7 @@ def find_field_flow(code, field):
 
 def find_request_input(code, field):
     """
-    V10.7 CLEAN INPUT DETECTOR
-
-    FIXES:
-    - убран шум
-    - добавлен $_GET
-    - строгая фильтрация
+    V11.3 INPUT DETECTOR (STRICT + SAFE)
     """
 
     if not code or not field:
@@ -114,18 +112,13 @@ def find_request_input(code, field):
     results = []
     field_l = field.lower()
 
+    pattern = re.compile(
+        r"(request->data|\$_post|\$_get)\[['\"]" + re.escape(field) + r"['\"]\]",
+        re.IGNORECASE
+    )
+
     for i, line in enumerate(lines, 1):
-
-        lower = line.lower()
-
-        if field_l not in lower:
-            continue
-
-        if (
-            "request->data" in lower
-            or "$_post" in lower
-            or "$_get" in lower
-        ):
+        if pattern.search(line):
             results.append({
                 "line": i,
                 "code": line.strip()

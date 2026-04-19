@@ -6,8 +6,10 @@ PROJECT_ROOT = "./app"
 # =========================
 
 # ОДНА модель для всего
-FAST_MODEL = "qcwind/qwen2.5-7B-instruct-Q4_K_M:latest"
-DEEP_MODEL = "qcwind/qwen2.5-7B-instruct-Q4_K_M:latest"
+FAST_MODEL = "qwen2.5:3b"
+DEEP_MODEL = "qwen2.5:7b"
+# FAST_MODEL = "qcwind/qwen2.5-7B-instruct-Q4_K_M:latest"
+# DEEP_MODEL = "qcwind/qwen2.5-7B-instruct-Q4_K_M:latest"
 
 # =========================
 # TOKENS (SAFE LIMITS)
