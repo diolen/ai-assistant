@@ -8,7 +8,7 @@ ASSISTANT_DIR = os.path.join(BASE_DIR, "assistant")
 if ASSISTANT_DIR not in sys.path:
     sys.path.insert(0, ASSISTANT_DIR)
 
-from core.engine import run_engine, parse_query
+from core.engine import run_engine
 
 
 def main():
@@ -19,17 +19,7 @@ def main():
     args = parser.parse_args()
 
     # =========================
-    # QUERY PARSING LAYER (FIXED)
-    # =========================
-    controller, action, field = parse_query(args.query)
-
-    print("[PARSE]")
-    print(f"  controller: {controller}")
-    print(f"  action: {action}")
-    print(f"  field: {field}")
-
-    # =========================
-    # ENGINE CALL (CURRENT COMPAT MODE)
+    # PURE ENTRY POINT (V10.3.2)
     # =========================
     run_engine(args.query, args.prompt)
 

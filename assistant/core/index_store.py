@@ -1,5 +1,8 @@
-import json
 import os
+import json
+
+from core.lifecycle_engine import build_lifecycle
+
 
 class IndexStore:
     def __init__(self, path):
@@ -12,8 +15,13 @@ class IndexStore:
             self.data = []
             return
 
-        with open(self.path, "r") as f:
-            self.data = json.load(f)
+        try:
+            with open(self.path, "r") as f:
+                self.data = json.load(f)
+        except Exception as e:
+            print(f"[INDEX ERROR] {e}")
+            self.data = []
+            return
 
         print(f"[INDEX] LOADED {len(self.data)} symbols")
 
@@ -22,37 +30,80 @@ class IndexStore:
 
     def find_field(self, field):
         """
-        SYMBOL-BASED SEARCH (V10)
+        V10.6 HARDENED:
+        - safe for None
+        - safe for corrupted index
+        - case-insensitive search
         """
+
+        if not field or not isinstance(field, str):
+            return []
+
+        field_l = field.lower()
+
         results = []
 
         for item in self.data:
 
-            reads = item.get("reads", [])
-            writes = item.get("writes", [])
+            if not isinstance(item, dict):
+                continue
 
-            # search in reads
+            reads = item.get("reads") or []
+            writes = item.get("writes") or []
+
+            if not isinstance(reads, list):
+                reads = []
+
+            if not isinstance(writes, list):
+                writes = []
+
+            # =========================
+            # READS
+            # =========================
             for r in reads:
-                if field in r.get("code", ""):
+
+                if not isinstance(r, dict):
+                    continue
+
+                code = r.get("code")
+
+                if not isinstance(code, str):
+                    continue
+
+                if field_l in code.lower():
                     results.append({
                         "file": item.get("file"),
                         "class": item.get("class"),
                         "method": item.get("method"),
                         "line": r.get("line"),
                         "type": "READ",
-                        "code": r.get("code")
+                        "code": code
                     })
 
-            # search in writes
+            # =========================
+            # WRITES
+            # =========================
             for w in writes:
-                if field in w.get("code", ""):
+
+                if not isinstance(w, dict):
+                    continue
+
+                code = w.get("code")
+
+                if not isinstance(code, str):
+                    continue
+
+                if field_l in code.lower():
                     results.append({
                         "file": item.get("file"),
                         "class": item.get("class"),
                         "method": item.get("method"),
                         "line": w.get("line"),
                         "type": "WRITE",
-                        "code": w.get("code")
+                        "code": code
                     })
 
         return results
+
+    def build_field_lifecycle(self, field):
+        return build_lifecycle(self.data, field)

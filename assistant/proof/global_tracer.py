@@ -3,6 +3,9 @@ from assistant.utils.colors import Color, c
 
 
 def detect_group(path):
+    if not path:
+        return "OTHER"
+
     if "/Model/" in path:
         return "MODEL"
     elif "/Controller/" in path:
@@ -14,47 +17,102 @@ def detect_group(path):
 
 
 def detect_type(code):
-    code_l = code.lower()
-
-    if "save" in code_l or "set(" in code_l or "=" in code_l:
-        return "WRITE"
-    elif "if" in code_l or "elseif" in code_l:
-        return "CONDITION"
-    else:
+    if not isinstance(code, str):
         return "READ"
 
+    code_l = code.lower()
 
-def build_global_report(results, filter_type=None, grep=None, limit=None):
+    # ❗ FIX: убрали "=" как признак WRITE
+    if "save(" in code_l or "->save(" in code_l or "set(" in code_l:
+        return "WRITE"
+
+    if "if" in code_l or "elseif" in code_l:
+        return "CONDITION"
+
+    return "READ"
+
+
+def _shorten(code, max_len=140):
+    """
+    ❗ критично для LLM
+    режем длинные строки
+    """
+    if not isinstance(code, str):
+        return ""
+
+    code = code.strip()
+
+    if len(code) <= max_len:
+        return code
+
+    return code[:max_len] + " ..."
+
+
+def build_global_report(results, filter_type=None, grep=None, limit=120):
+    """
+    V10.3.3 OPTIMIZED GLOBAL REPORT
+
+    FIXES:
+    - жесткий лимит строк
+    - обрезка кода
+    - меньше мусора → быстрее LLM
+    """
+
+    if not results:
+        return "NO GLOBAL DATA"
+
     grouped = defaultdict(list)
 
+    # =========================
+    # PRE-FILTER
+    # =========================
     for r in results:
-        r["group"] = detect_group(r["file"])
-        r["usage"] = detect_type(r["code"])
 
-        if filter_type and r["usage"] != filter_type:
+        if not isinstance(r, dict):
             continue
 
-        if grep and grep.lower() not in r["code"].lower():
+        code = r.get("code", "")
+        file = r.get("file", "")
+
+        usage = detect_type(code)
+
+        if filter_type and usage != filter_type:
             continue
 
-        grouped[r["group"]].append(r)
+        if grep and grep.lower() not in code.lower():
+            continue
 
+        group = detect_group(file)
+
+        grouped[group].append({
+            "file": file,
+            "line": r.get("line"),
+            "code": _shorten(code),
+            "usage": usage
+        })
+
+    # =========================
+    # BUILD OUTPUT
+    # =========================
     out = []
-
     total = 0
 
-    for group, items in grouped.items():
+    # ❗ приоритет групп
+    ordered_groups = ["CONTROLLER", "MODEL", "VIEW", "OTHER"]
+
+    for group in ordered_groups:
+
+        items = grouped.get(group)
         if not items:
             continue
 
-        # заголовок группы
         out.append(c(f"\n=== {group} ({len(items)}) ===", Color.BLUE))
 
         for r in items:
-            total += 1
 
-            if limit and total > limit:
-                out.append(c("\n[TRUNCATED]", Color.RED))
+            if total >= limit:
+                out.append(c("\n[TRUNCATED GLOBAL OUTPUT]", Color.RED))
+                out.append(c(f"[TOTAL SHOWN] {total}", Color.GREEN))
                 return "\n".join(out)
 
             usage_color = {
@@ -68,6 +126,8 @@ def build_global_report(results, filter_type=None, grep=None, limit=None):
 
             out.append(line)
             out.append(f"  {code}")
+
+            total += 1
 
     out.append(c(f"\n[TOTAL SHOWN] {total}", Color.GREEN))
 
